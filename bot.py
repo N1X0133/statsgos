@@ -26,7 +26,6 @@ MVD_SERVER = 767392766606049330
 
 # -------------------- КАНАЛЫ --------------------
 CHANNELS_CONFIG = {
-    # ФСБ
     768174465745813531: {
         1180251537734377513: {"faction": "ФСБ", "action": "аресты"},
         1405961555904041021: {"faction": "ФСБ", "action": "собеседования"},
@@ -35,7 +34,6 @@ CHANNELS_CONFIG = {
         1474465615073775791: {"faction": "ФСБ", "action": "бизнесы"},
         1444587786572402728: {"faction": "ФСБ", "action": "облавы"},
     },
-    # МВД
     767392766606049330: {
         833422076596715581:  {"faction": "МВД", "action": "аресты"},
         1175871168947949658: {"faction": "МВД", "action": "собеседования"},
@@ -88,6 +86,7 @@ class ReportBot(commands.Bot):
 
     async def init_db(self):
         async with self.pool.acquire() as conn:
+            await conn.execute('DROP TABLE IF EXISTS reports CASCADE')
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS reports (
                     id SERIAL PRIMARY KEY,
@@ -115,7 +114,6 @@ async def on_message(message):
     guild_id = message.guild.id
     channel_id = message.channel.id
 
-    # Проверяем, есть ли этот сервер и канал в конфиге
     if guild_id in CHANNELS_CONFIG and channel_id in CHANNELS_CONFIG[guild_id]:
         config = CHANNELS_CONFIG[guild_id][channel_id]
         faction = config["faction"]
@@ -143,6 +141,24 @@ class StatsCommand(app_commands.Group):
         super().__init__(name='stats', description='Статистика по действиям')
         self.bot = bot_instance
 
+    # === ОБЩАЯ СТАТИСТИКА (ВСЁ СРАЗУ) ===
+    @app_commands.command(name='общая', description='Показать всё за период')
+    @app_commands.describe(
+        period='Период',
+        faction='Фракция (пусто — все)'
+    )
+    @app_commands.choices(
+        period=[
+            app_commands.Choice(name='День', value='day'),
+            app_commands.Choice(name='Неделя', value='week'),
+            app_commands.Choice(name='Месяц', value='month'),
+        ],
+        faction=[app_commands.Choice(name=f, value=f) for f in FACTIONS]
+    )
+    async def stats_all(self, interaction: discord.Interaction, period: str, faction: str = None):
+        await self._show_all_stats(interaction, period, faction=faction)
+
+    # === ОТДЕЛЬНАЯ СТАТИСТИКА ===
     @app_commands.command(name='день', description='За сегодня')
     @app_commands.describe(action='Тип действия', faction='Фракция (пусто — все)')
     @app_commands.choices(
@@ -184,6 +200,67 @@ class StatsCommand(app_commands.Group):
     async def stats_period(self, interaction: discord.Interaction, action: str, start: str, end: str, faction: str = None):
         await self._show_stats(interaction, action, period='custom', start=start, end=end, faction=faction)
 
+    # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+
+    def _get_dates(self, period, start=None, end=None):
+        now = datetime.utcnow()
+        if period == 'day':
+            return now.replace(hour=0, minute=0, second=0, microsecond=0), now
+        elif period == 'week':
+            return now - timedelta(days=7), now
+        elif period == 'month':
+            return now - timedelta(days=30), now
+        elif period == 'custom':
+            try:
+                d_start = datetime.strptime(start, '%Y-%m-%d')
+                d_end = datetime.strptime(end, '%Y-%m-%d') + timedelta(days=1)
+                return d_start, d_end
+            except ValueError:
+                return None, None
+        return None, None
+
+    async def _show_all_stats(self, interaction, period, faction=None):
+        date_start, date_end = self._get_dates(period)
+        if date_start is None:
+            await interaction.response.send_message('❌ Неверная дата.', ephemeral=True)
+            return
+
+        period_names = {'day': 'День', 'week': 'Неделя', 'month': 'Месяц'}
+        period_name = period_names.get(period, 'Период')
+
+        async with self.bot.pool.acquire() as conn:
+            embed = discord.Embed(
+                title=f'📊 Общая статистика — {period_name}',
+                description=f'📅 {date_start.strftime("%d.%m.%Y")} — {date_end.strftime("%d.%m.%Y")}',
+                color=0x3498db
+            )
+
+            total = 0
+            for action in VALID_ACTIONS:
+                if faction:
+                    query = '''SELECT COUNT(*) FROM reports
+                               WHERE guild_id = $1 AND action_type = $2 AND faction = $3
+                               AND created_at >= $4 AND created_at <= $5'''
+                    params = (interaction.guild_id, action, faction, date_start, date_end)
+                else:
+                    query = '''SELECT COUNT(*) FROM reports
+                               WHERE guild_id = $1 AND action_type = $2
+                               AND created_at >= $3 AND created_at <= $4'''
+                    params = (interaction.guild_id, action, date_start, date_end)
+
+                count = await conn.fetchval(query, *params)
+                total += count
+                embed.add_field(
+                    name=action.capitalize(),
+                    value=f'```{count}```',
+                    inline=True
+                )
+
+            faction_text = f' [{faction}]' if faction else ' (все фракции)'
+            embed.set_footer(text=f'Всего действий: {total}{faction_text}')
+
+        await interaction.response.send_message(embed=embed)
+
     async def _show_stats(self, interaction, action, period, start=None, end=None, faction=None):
         action = action.lower()
         if action not in VALID_ACTIONS:
@@ -192,27 +269,11 @@ class StatsCommand(app_commands.Group):
             )
             return
 
-        now = datetime.utcnow()
-        if period == 'day':
-            date_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            date_end = now
-        elif period == 'week':
-            date_end = now
-            date_start = now - timedelta(days=7)
-        elif period == 'month':
-            date_end = now
-            date_start = now - timedelta(days=30)
-        elif period == 'custom':
-            try:
-                date_start = datetime.strptime(start, '%Y-%m-%d')
-                date_end = datetime.strptime(end, '%Y-%m-%d') + timedelta(days=1)
-            except ValueError:
-                await interaction.response.send_message(
-                    '❌ Неверный формат даты. Используйте ГГГГ-ММ-ДД.', ephemeral=True
-                )
-                return
+        date_start, date_end = self._get_dates(period, start, end)
+        if date_start is None:
+            await interaction.response.send_message('❌ Неверный формат даты. Используйте ГГГГ-ММ-ДД.', ephemeral=True)
+            return
 
-        # Запрос
         if faction:
             query = '''SELECT COUNT(*) FROM reports
                        WHERE guild_id = $1 AND action_type = $2 AND faction = $3

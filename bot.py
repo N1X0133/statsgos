@@ -110,7 +110,8 @@ bot = ReportBot()
 # -------------------- Обработка сообщений --------------------
 @bot.event
 async def on_message(message):
-    if message.author.bot:
+    # Игнорируем только своего бота, другие боты считаем
+    if message.author.id == bot.user.id:
         return
 
     guild_id = message.guild.id
@@ -140,9 +141,6 @@ async def on_message(message):
 # -------------------- Удаление сообщения → минус отчёт --------------------
 @bot.event
 async def on_message_delete(message):
-    if message.author.bot:
-        return
-
     guild_id = message.guild.id
     channel_id = message.channel.id
 

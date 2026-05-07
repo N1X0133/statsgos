@@ -25,8 +25,8 @@ FACTIONS = ['МВД', 'ФСБ']
 # ID серверов
 FSB_SERVER = 768174465745813531
 MVD_SERVER = 767392766606049330
-LEADER_SERVER = 886219875452854292  # сервер для просмотра статистики
-REPORT_SERVERS = [FSB_SERVER, MVD_SERVER]  # серверы, откуда собираем отчёты
+LEADER_SERVER = 886219875452854292
+REPORT_SERVERS = [FSB_SERVER, MVD_SERVER]
 
 # -------------------- КАНАЛЫ --------------------
 CHANNELS_CONFIG = {
@@ -243,8 +243,9 @@ class StatsCommand(app_commands.Group):
         period_name = period_names.get(period, 'Период')
 
         async with self.bot.pool.acquire() as conn:
+            faction_text = f' [{faction}]' if faction else ' (все фракции)'
             embed = discord.Embed(
-                title=f'📊 Общая статистика — {period_name}',
+                title=f'📊 Общая статистика — {period_name}{faction_text}',
                 description=f'📅 {date_start.strftime("%d.%m.%Y")} — {date_end.strftime("%d.%m.%Y")}',
                 color=0x3498db
             )
@@ -268,8 +269,7 @@ class StatsCommand(app_commands.Group):
                 total += count
                 embed.add_field(name=action.capitalize(), value=f'```{count}```', inline=True)
 
-            faction_text = f' [{faction}]' if faction else ' (все фракции)'
-            embed.set_footer(text=f'Всего действий: {total}{faction_text} | ФСБ + МВД')
+            embed.set_footer(text=f'Всего действий: {total} | ФСБ + МВД')
 
         await interaction.response.send_message(embed=embed)
 

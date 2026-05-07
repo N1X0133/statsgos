@@ -20,10 +20,6 @@ ADMIN_IDS = [927642459998138418, 500965898476322817, 1426923576229101568]
 
 VALID_ACTIONS = ['аресты', 'собеседования', 'поставки', 'взг', 'бизнесы', 'облавы', 'штрафы']
 
-# ID серверов
-FSB_SERVER = 768174465745813531
-MVD_SERVER = 767392766606049330
-
 # -------------------- КАНАЛЫ --------------------
 CHANNELS_CONFIG = {
     768174465745813531: {
@@ -135,18 +131,33 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
+# -------------------- Удаление сообщения → минус отчёт --------------------
+@bot.event
+async def on_message_delete(message):
+    if message.author.bot:
+        return
+
+    guild_id = message.guild.id
+    channel_id = message.channel.id
+
+    if guild_id in CHANNELS_CONFIG and channel_id in CHANNELS_CONFIG[guild_id]:
+        async with bot.pool.acquire() as conn:
+            result = await conn.execute(
+                'DELETE FROM reports WHERE guild_id = $1 AND message_id = $2',
+                guild_id, message.id
+            )
+
+        if 'DELETE 0' not in result:
+            logger.info(f'Отчёт {message.id} автоматически удалён (сообщение удалено).')
+
 # -------------------- Команда статистики --------------------
 class StatsCommand(app_commands.Group):
     def __init__(self, bot_instance):
         super().__init__(name='stats', description='Статистика по действиям')
         self.bot = bot_instance
 
-    # === ОБЩАЯ СТАТИСТИКА (ВСЁ СРАЗУ) ===
     @app_commands.command(name='общая', description='Показать всё за период')
-    @app_commands.describe(
-        period='Период',
-        faction='Фракция (пусто — все)'
-    )
+    @app_commands.describe(period='Период', faction='Фракция (пусто — все)')
     @app_commands.choices(
         period=[
             app_commands.Choice(name='День', value='day'),
@@ -158,7 +169,6 @@ class StatsCommand(app_commands.Group):
     async def stats_all(self, interaction: discord.Interaction, period: str, faction: str = None):
         await self._show_all_stats(interaction, period, faction=faction)
 
-    # === ОТДЕЛЬНАЯ СТАТИСТИКА ===
     @app_commands.command(name='день', description='За сегодня')
     @app_commands.describe(action='Тип действия', faction='Фракция (пусто — все)')
     @app_commands.choices(
@@ -199,8 +209,6 @@ class StatsCommand(app_commands.Group):
     )
     async def stats_period(self, interaction: discord.Interaction, action: str, start: str, end: str, faction: str = None):
         await self._show_stats(interaction, action, period='custom', start=start, end=end, faction=faction)
-
-    # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 
     def _get_dates(self, period, start=None, end=None):
         now = datetime.utcnow()
@@ -250,11 +258,7 @@ class StatsCommand(app_commands.Group):
 
                 count = await conn.fetchval(query, *params)
                 total += count
-                embed.add_field(
-                    name=action.capitalize(),
-                    value=f'```{count}```',
-                    inline=True
-                )
+                embed.add_field(name=action.capitalize(), value=f'```{count}```', inline=True)
 
             faction_text = f' [{faction}]' if faction else ' (все фракции)'
             embed.set_footer(text=f'Всего действий: {total}{faction_text}')
@@ -271,7 +275,7 @@ class StatsCommand(app_commands.Group):
 
         date_start, date_end = self._get_dates(period, start, end)
         if date_start is None:
-            await interaction.response.send_message('❌ Неверный формат даты. Используйте ГГГГ-ММ-ДД.', ephemeral=True)
+            await interaction.response.send_message('❌ Неверный формат даты.', ephemeral=True)
             return
 
         if faction:
@@ -298,15 +302,15 @@ class StatsCommand(app_commands.Group):
 # -------------------- Показать каналы --------------------
 class ListChannelsCommand(app_commands.Group):
     def __init__(self, bot_instance):
-        super().__init__(name='list_channels', description='Показать все каналы из конфига')
+        super().__init__(name='list_channels', description='Список настроенных каналов')
         self.bot = bot_instance
 
-    @app_commands.command(name='все', description='Список настроенных каналов')
+    @app_commands.command(name='все', description='Список каналов')
     @is_admin()
     async def list_channels(self, interaction: discord.Interaction):
         guild_id = interaction.guild_id
         if guild_id not in CHANNELS_CONFIG:
-            await interaction.response.send_message('Для этого сервера нет настроенных каналов.', ephemeral=True)
+            await interaction.response.send_message('Нет настроенных каналов.', ephemeral=True)
             return
 
         text = '**Настроенные каналы:**\n'
@@ -322,7 +326,7 @@ class DeleteReportCommand(app_commands.Group):
         super().__init__(name='delete_report', description='Удалить ошибочный отчёт')
         self.bot = bot_instance
 
-    @app_commands.command(name='по_id', description='Удалить отчёт по ID сообщения')
+    @app_commands.command(name='по_id', description='Удалить по ID сообщения')
     @app_commands.describe(message_id='ID сообщения')
     @is_admin()
     async def delete_report(self, interaction: discord.Interaction, message_id: str):

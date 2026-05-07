@@ -10,12 +10,11 @@ import asyncpg
 
 # -------------------- Конфигурация --------------------
 TOKEN = os.getenv('DISCORD_TOKEN')
-DATABASE_URL = os.getenv('DATABASE_URL')
-
 if not TOKEN:
     raise RuntimeError("❌ DISCORD_TOKEN не установлен!")
-if not DATABASE_URL:
-    raise RuntimeError("❌ DATABASE_URL не установлен!")
+
+# Строка подключения к базе данных
+DATABASE_URL = "postgresql://bothost_db_b1f669c8b755:RNSCsFK4HEwJdhFwsbqV4ulP7C5nEqGimL3wKprZHFQ@node1.pghost.ru:15653/bothost_db_b1f669c8b755"
 
 # ID пользователей, которым разрешено управлять ботом
 ADMIN_IDS = [927642459998138418, 500965898476322817, 1426923576229101568]
@@ -27,11 +26,10 @@ logger = logging.getLogger(__name__)
 
 # -------------------- Проверка на админа --------------------
 def is_admin():
-    """Проверяет, что команду использует один из трёх разрешённых пользователей."""
     async def predicate(interaction: discord.Interaction) -> bool:
         if interaction.user.id not in ADMIN_IDS:
             await interaction.response.send_message(
-                "❌ У вас нет прав для использования этой команды. Обратитесь к руководству.",
+                "❌ У вас нет прав для использования этой команды.",
                 ephemeral=True
             )
             return False
@@ -54,7 +52,6 @@ class ReportBot(commands.Bot):
 
         await self.init_db()
 
-        # Регистрируем команды
         self.tree.add_command(StatsCommand(self))
         self.tree.add_command(AddChannelCommand(self))
         self.tree.add_command(RemoveChannelCommand(self))
@@ -121,7 +118,7 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# -------------------- Команда статистики (доступна всем) --------------------
+# -------------------- Команда статистики --------------------
 class StatsCommand(app_commands.Group):
     def __init__(self, bot_instance):
         super().__init__(name='stats', description='Статистика по действиям')
@@ -194,7 +191,7 @@ class StatsCommand(app_commands.Group):
             ephemeral=False
         )
 
-# -------------------- Управление каналами (только для админов) --------------------
+# -------------------- Управление каналами --------------------
 class AddChannelCommand(app_commands.Group):
     def __init__(self, bot_instance):
         super().__init__(name='add_channel', description='Добавить канал для отслеживания')
@@ -271,7 +268,7 @@ class DeleteReportCommand(app_commands.Group):
         super().__init__(name='delete_report', description='Удалить ошибочный отчёт')
         self.bot = bot_instance
 
-    @app_commands.command(name='по_id', description='Удалить отчёт по ID сообщения (включите режим разработчика)')
+    @app_commands.command(name='по_id', description='Удалить отчёт по ID сообщения')
     @app_commands.describe(message_id='ID сообщения с отчётом')
     @is_admin()
     async def delete_report(self, interaction: discord.Interaction, message_id: str):

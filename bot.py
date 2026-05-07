@@ -88,7 +88,6 @@ class ReportBot(commands.Bot):
 
     async def init_db(self):
         async with self.pool.acquire() as conn:
-            await conn.execute('DROP TABLE IF EXISTS reports CASCADE')
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS reports (
                     id SERIAL PRIMARY KEY,
@@ -110,7 +109,6 @@ bot = ReportBot()
 # -------------------- Обработка сообщений --------------------
 @bot.event
 async def on_message(message):
-    # Игнорируем только своего бота, другие боты считаем
     if message.author.id == bot.user.id:
         return
 

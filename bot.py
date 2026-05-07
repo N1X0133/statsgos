@@ -20,9 +20,17 @@ ADMIN_IDS = [927642459998138418, 500965898476322817, 1426923576229101568]
 
 VALID_ACTIONS = ['аресты', 'собеседования', 'поставки', 'взг', 'бизнесы', 'облавы', 'штрафы']
 
+FACTIONS = ['МВД', 'ФСБ']
+
+# ID серверов
+FSB_SERVER = 768174465745813531
+MVD_SERVER = 767392766606049330
+LEADER_SERVER = 886219875452854292  # сервер для просмотра статистики
+REPORT_SERVERS = [FSB_SERVER, MVD_SERVER]  # серверы, откуда собираем отчёты
+
 # -------------------- КАНАЛЫ --------------------
 CHANNELS_CONFIG = {
-    768174465745813531: {
+    FSB_SERVER: {
         1180251537734377513: {"faction": "ФСБ", "action": "аресты"},
         1405961555904041021: {"faction": "ФСБ", "action": "собеседования"},
         1444587738446827570: {"faction": "ФСБ", "action": "поставки"},
@@ -30,7 +38,7 @@ CHANNELS_CONFIG = {
         1474465615073775791: {"faction": "ФСБ", "action": "бизнесы"},
         1444587786572402728: {"faction": "ФСБ", "action": "облавы"},
     },
-    767392766606049330: {
+    MVD_SERVER: {
         833422076596715581:  {"faction": "МВД", "action": "аресты"},
         1175871168947949658: {"faction": "МВД", "action": "собеседования"},
         1266104348455207014: {"faction": "МВД", "action": "штрафы"},
@@ -39,8 +47,6 @@ CHANNELS_CONFIG = {
         1472542670659518635: {"faction": "МВД", "action": "облавы"},
     },
 }
-
-FACTIONS = ['МВД', 'ФСБ']
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -245,23 +251,25 @@ class StatsCommand(app_commands.Group):
 
             total = 0
             for action in VALID_ACTIONS:
-                if faction:
-                    query = '''SELECT COUNT(*) FROM reports
-                               WHERE guild_id = $1 AND action_type = $2 AND faction = $3
-                               AND created_at >= $4 AND created_at <= $5'''
-                    params = (interaction.guild_id, action, faction, date_start, date_end)
-                else:
-                    query = '''SELECT COUNT(*) FROM reports
-                               WHERE guild_id = $1 AND action_type = $2
-                               AND created_at >= $3 AND created_at <= $4'''
-                    params = (interaction.guild_id, action, date_start, date_end)
-
-                count = await conn.fetchval(query, *params)
+                count = 0
+                for server_id in REPORT_SERVERS:
+                    if faction:
+                        query = '''SELECT COUNT(*) FROM reports
+                                   WHERE guild_id = $1 AND action_type = $2 AND faction = $3
+                                   AND created_at >= $4 AND created_at <= $5'''
+                        params = (server_id, action, faction, date_start, date_end)
+                    else:
+                        query = '''SELECT COUNT(*) FROM reports
+                                   WHERE guild_id = $1 AND action_type = $2
+                                   AND created_at >= $3 AND created_at <= $4'''
+                        params = (server_id, action, date_start, date_end)
+                    c = await conn.fetchval(query, *params)
+                    count += c
                 total += count
                 embed.add_field(name=action.capitalize(), value=f'```{count}```', inline=True)
 
             faction_text = f' [{faction}]' if faction else ' (все фракции)'
-            embed.set_footer(text=f'Всего действий: {total}{faction_text}')
+            embed.set_footer(text=f'Всего действий: {total}{faction_text} | ФСБ + МВД')
 
         await interaction.response.send_message(embed=embed)
 
@@ -278,24 +286,27 @@ class StatsCommand(app_commands.Group):
             await interaction.response.send_message('❌ Неверный формат даты.', ephemeral=True)
             return
 
-        if faction:
-            query = '''SELECT COUNT(*) FROM reports
-                       WHERE guild_id = $1 AND action_type = $2 AND faction = $3
-                       AND created_at >= $4 AND created_at <= $5'''
-            params = (interaction.guild_id, action, faction, date_start, date_end)
-        else:
-            query = '''SELECT COUNT(*) FROM reports
-                       WHERE guild_id = $1 AND action_type = $2
-                       AND created_at >= $3 AND created_at <= $4'''
-            params = (interaction.guild_id, action, date_start, date_end)
-
         async with self.bot.pool.acquire() as conn:
-            count = await conn.fetchval(query, *params)
+            count = 0
+            for server_id in REPORT_SERVERS:
+                if faction:
+                    query = '''SELECT COUNT(*) FROM reports
+                               WHERE guild_id = $1 AND action_type = $2 AND faction = $3
+                               AND created_at >= $4 AND created_at <= $5'''
+                    params = (server_id, action, faction, date_start, date_end)
+                else:
+                    query = '''SELECT COUNT(*) FROM reports
+                               WHERE guild_id = $1 AND action_type = $2
+                               AND created_at >= $3 AND created_at <= $4'''
+                    params = (server_id, action, date_start, date_end)
+                c = await conn.fetchval(query, *params)
+                count += c
 
         faction_text = f" [{faction}]" if faction else " (все)"
         await interaction.response.send_message(
             f'📊 **{action.capitalize()}**{faction_text}: **{count}** шт.\n'
-            f'📅 {date_start.strftime("%d.%m.%Y")} — {date_end.strftime("%d.%m.%Y")}',
+            f'📅 {date_start.strftime("%d.%m.%Y")} — {date_end.strftime("%d.%m.%Y")}\n'
+            f'🌐 ФСБ + МВД',
             ephemeral=False
         )
 
@@ -338,8 +349,8 @@ class DeleteReportCommand(app_commands.Group):
 
         async with self.bot.pool.acquire() as conn:
             result = await conn.execute(
-                'DELETE FROM reports WHERE guild_id = $1 AND message_id = $2',
-                interaction.guild_id, msg_id
+                'DELETE FROM reports WHERE message_id = $1',
+                msg_id
             )
 
         if 'DELETE 0' in result:

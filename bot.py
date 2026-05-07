@@ -17,10 +17,26 @@ if not TOKEN:
 if not DATABASE_URL:
     raise RuntimeError("❌ DATABASE_URL не установлен!")
 
+# ID пользователей, которым разрешено управлять ботом
+ADMIN_IDS = [927642459998138418, 500965898476322817, 1426923576229101568]
+
 VALID_ACTIONS = ['аресты', 'собеседования', 'поставки', 'взг', 'бизнесы', 'облавы', 'банки']
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# -------------------- Проверка на админа --------------------
+def is_admin():
+    """Проверяет, что команду использует один из трёх разрешённых пользователей."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if interaction.user.id not in ADMIN_IDS:
+            await interaction.response.send_message(
+                "❌ У вас нет прав для использования этой команды. Обратитесь к руководству.",
+                ephemeral=True
+            )
+            return False
+        return True
+    return app_commands.check(predicate)
 
 # -------------------- Инициализация бота --------------------
 intents = discord.Intents.default()
@@ -30,14 +46,12 @@ intents.guilds = True
 class ReportBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix='!', intents=intents)
-        self.pool = None  # пул соединений с PostgreSQL
+        self.pool = None
 
     async def setup_hook(self):
-        # Создаём пул подключений к PostgreSQL
         self.pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=10)
         logger.info("Подключение к PostgreSQL установлено")
 
-        # Создаём таблицы, если их нет
         await self.init_db()
 
         # Регистрируем команды
@@ -47,12 +61,10 @@ class ReportBot(commands.Bot):
         self.tree.add_command(ListChannelsCommand(self))
         self.tree.add_command(DeleteReportCommand(self))
 
-        # Синхронизация команд с Discord
         await self.tree.sync()
         logger.info("Команды синхронизированы")
 
     async def init_db(self):
-        """Создаёт таблицы, если они ещё не существуют."""
         async with self.pool.acquire() as conn:
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS reports (
@@ -85,7 +97,6 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    # Проверяем, привязан ли этот канал к какому-то действию
     async with bot.pool.acquire() as conn:
         row = await conn.fetchrow(
             'SELECT action_type FROM monitored_channels WHERE guild_id = $1 AND channel_id = $2',
@@ -94,11 +105,10 @@ async def on_message(message):
 
     if row:
         action_type = row['action_type']
-        # Сохраняем отчёт
         async with bot.pool.acquire() as conn:
             try:
                 await conn.execute(
-                    '''INSERT INTO reports 
+                    '''INSERT INTO reports
                        (guild_id, channel_id, message_id, author_id, author_name, action_type, content)
                        VALUES ($1, $2, $3, $4, $5, $6, $7)''',
                     message.guild.id, message.channel.id, message.id,
@@ -107,12 +117,11 @@ async def on_message(message):
                 await message.add_reaction('✅')
                 logger.info(f'Отчёт [{action_type}] от {message.author} сохранён.')
             except asyncpg.UniqueViolationError:
-                # Сообщение уже было записано (например, при дублировании события)
                 pass
 
     await bot.process_commands(message)
 
-# -------------------- Команда статистики --------------------
+# -------------------- Команда статистики (доступна всем) --------------------
 class StatsCommand(app_commands.Group):
     def __init__(self, bot_instance):
         super().__init__(name='stats', description='Статистика по действиям')
@@ -151,7 +160,6 @@ class StatsCommand(app_commands.Group):
             )
             return
 
-        # Определяем временной диапазон
         now = datetime.utcnow()
         if period == 'day':
             date_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -165,12 +173,14 @@ class StatsCommand(app_commands.Group):
         elif period == 'custom':
             try:
                 date_start = datetime.strptime(start, '%Y-%m-%d')
-                date_end = datetime.strptime(end, '%Y-%m-%d') + timedelta(days=1)  # включительно до конца дня
+                date_end = datetime.strptime(end, '%Y-%m-%d') + timedelta(days=1)
             except ValueError:
-                await interaction.response.send_message('❌ Неверный формат даты. Используйте ГГГГ-ММ-ДД.', ephemeral=True)
+                await interaction.response.send_message(
+                    '❌ Неверный формат даты. Используйте ГГГГ-ММ-ДД.',
+                    ephemeral=True
+                )
                 return
 
-        # Запрос к БД
         async with self.bot.pool.acquire() as conn:
             count = await conn.fetchval(
                 '''SELECT COUNT(*) FROM reports
@@ -181,10 +191,10 @@ class StatsCommand(app_commands.Group):
 
         await interaction.response.send_message(
             f'📊 **{action.capitalize()}** с {date_start.strftime("%d.%m.%Y")} по {date_end.strftime("%d.%m.%Y")}: **{count}** шт.',
-            ephemeral=False  # все видят
+            ephemeral=False
         )
 
-# -------------------- Управление каналами --------------------
+# -------------------- Управление каналами (только для админов) --------------------
 class AddChannelCommand(app_commands.Group):
     def __init__(self, bot_instance):
         super().__init__(name='add_channel', description='Добавить канал для отслеживания')
@@ -192,11 +202,14 @@ class AddChannelCommand(app_commands.Group):
 
     @app_commands.command(name='действие', description='Назначить канал для действия')
     @app_commands.describe(action='Тип действия', channel='Канал')
-    @app_commands.checks.has_permissions(administrator=True)
+    @is_admin()
     async def add_channel(self, interaction: discord.Interaction, action: str, channel: discord.TextChannel):
         action = action.lower()
         if action not in VALID_ACTIONS:
-            await interaction.response.send_message(f'❌ Неверный тип. Допустимые: {", ".join(VALID_ACTIONS)}', ephemeral=True)
+            await interaction.response.send_message(
+                f'❌ Неверный тип. Допустимые: {", ".join(VALID_ACTIONS)}',
+                ephemeral=True
+            )
             return
 
         async with self.bot.pool.acquire() as conn:
@@ -204,7 +217,10 @@ class AddChannelCommand(app_commands.Group):
                 'INSERT INTO monitored_channels (guild_id, channel_id, action_type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
                 interaction.guild_id, channel.id, action
             )
-        await interaction.response.send_message(f'✅ Канал {channel.mention} теперь принимает отчёты типа **{action}**', ephemeral=True)
+        await interaction.response.send_message(
+            f'✅ Канал {channel.mention} теперь принимает отчёты типа **{action}**',
+            ephemeral=True
+        )
 
 class RemoveChannelCommand(app_commands.Group):
     def __init__(self, bot_instance):
@@ -213,7 +229,7 @@ class RemoveChannelCommand(app_commands.Group):
 
     @app_commands.command(name='действие', description='Убрать канал для действия')
     @app_commands.describe(action='Тип действия', channel='Канал')
-    @app_commands.checks.has_permissions(administrator=True)
+    @is_admin()
     async def remove_channel(self, interaction: discord.Interaction, action: str, channel: discord.TextChannel):
         action = action.lower()
         async with self.bot.pool.acquire() as conn:
@@ -221,7 +237,10 @@ class RemoveChannelCommand(app_commands.Group):
                 'DELETE FROM monitored_channels WHERE guild_id = $1 AND channel_id = $2 AND action_type = $3',
                 interaction.guild_id, channel.id, action
             )
-        await interaction.response.send_message(f'✅ Канал {channel.mention} больше не отслеживается для **{action}**', ephemeral=True)
+        await interaction.response.send_message(
+            f'✅ Канал {channel.mention} больше не отслеживается для **{action}**',
+            ephemeral=True
+        )
 
 class ListChannelsCommand(app_commands.Group):
     def __init__(self, bot_instance):
@@ -229,7 +248,7 @@ class ListChannelsCommand(app_commands.Group):
         self.bot = bot_instance
 
     @app_commands.command(name='все', description='Список каналов и назначенных действий')
-    @app_commands.checks.has_permissions(administrator=True)
+    @is_admin()
     async def list_channels(self, interaction: discord.Interaction):
         async with self.bot.pool.acquire() as conn:
             rows = await conn.fetch(
@@ -247,7 +266,6 @@ class ListChannelsCommand(app_commands.Group):
             text += f'{r["action_type"]}: {ch_name}\n'
         await interaction.response.send_message(text, ephemeral=True)
 
-# -------------------- Удаление отчёта --------------------
 class DeleteReportCommand(app_commands.Group):
     def __init__(self, bot_instance):
         super().__init__(name='delete_report', description='Удалить ошибочный отчёт')
@@ -255,12 +273,15 @@ class DeleteReportCommand(app_commands.Group):
 
     @app_commands.command(name='по_id', description='Удалить отчёт по ID сообщения (включите режим разработчика)')
     @app_commands.describe(message_id='ID сообщения с отчётом')
-    @app_commands.checks.has_permissions(administrator=True)
+    @is_admin()
     async def delete_report(self, interaction: discord.Interaction, message_id: str):
         try:
             msg_id = int(message_id)
         except ValueError:
-            await interaction.response.send_message('❌ Неверный ID. Скопируйте числовой ID сообщения.', ephemeral=True)
+            await interaction.response.send_message(
+                '❌ Неверный ID. Скопируйте числовой ID сообщения.',
+                ephemeral=True
+            )
             return
 
         async with self.bot.pool.acquire() as conn:
@@ -268,13 +289,17 @@ class DeleteReportCommand(app_commands.Group):
                 'DELETE FROM reports WHERE guild_id = $1 AND message_id = $2',
                 interaction.guild_id, msg_id
             )
-        # В asyncpg результат execute содержит строку с количеством удалённых записей,
-        # проще сделать дополнительный запрос или ориентироваться на то, что удалилось.
-        # Сделаем проще: проверим существование до удаления.
+
         if 'DELETE 0' in result:
-            await interaction.response.send_message('❌ Отчёт с таким ID не найден.', ephemeral=True)
+            await interaction.response.send_message(
+                '❌ Отчёт с таким ID не найден.',
+                ephemeral=True
+            )
         else:
-            await interaction.response.send_message(f'✅ Отчёт с ID {msg_id} удалён из статистики.', ephemeral=True)
+            await interaction.response.send_message(
+                f'✅ Отчёт с ID {msg_id} удалён из статистики.',
+                ephemeral=True
+            )
 
 # -------------------- Запуск --------------------
 if __name__ == '__main__':
